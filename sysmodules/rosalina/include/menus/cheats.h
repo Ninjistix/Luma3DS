@@ -35,3 +35,6 @@
 void RosalinaMenu_Cheats(void);
 void Cheat_SeedRng(u64 seed);
 void Cheat_ApplyCheats(void);
+/* Persist active cheat list for a title (one cheat name per line) */
+void Cheat_SaveActiveCheats(u64 titleId);
+void Cheat_LoadActiveCheats(u64 titleId);
