@@ -26,6 +26,8 @@
 
 #include <3ds.h>
 #include <stdlib.h>
+#include <string.h> // added for strnlen, memcpy, strncmp
+#include <stdio.h>  // added for snprintf, sprintf
 #include "menus/cheats.h"
 #include "memory.h"
 #include "draw.h"
@@ -1889,6 +1891,97 @@ static char* stripWhitespace(char* in)
     return ret;
 }
 
+/* --- Begin: Save / Load active cheats for a title --- */
+
+#define ACTIVE_CHEATS_PATH_FMT "/luma/titles/%016llX/active_cheats.txt"
+#define ACTIVE_LINE_MAX 64
+
+// Save active cheats by name to /luma/titles/<titleId>/active_cheats.txt
+static void Cheat_SaveActiveCheats(u64 titleId)
+{
+    if (!titleId || cheatCount == 0) return;
+
+    char path[64];
+    snprintf(path, sizeof(path), ACTIVE_CHEATS_PATH_FMT, titleId);
+
+    IFile file;
+    // Open (create/truncate) the file for writing
+    Result res = IFile_Open(&file, ARCHIVE_SDMC, fsMakePath(PATH_EMPTY, ""), fsMakePath(PATH_ASCII, path),
+                            FS_OPEN_WRITE | FS_OPEN_CREATE | FS_OPEN_TRUNCATE);
+    if (R_FAILED(res)) {
+        return;
+    }
+
+    for (u8 i = 0; i < cheatCount; i++)
+    {
+        CheatDescription* c = cheats[i];
+        if (!c) continue;
+        if (!c->active) continue;
+
+        size_t len = strnlen(c->name, sizeof(c->name));
+        if (len == 0) continue;
+
+        // Write "name\n"
+        char line[ACTIVE_LINE_MAX];
+        if (len >= sizeof(line) - 1) len = sizeof(line) - 2;
+        memcpy(line, c->name, len);
+        line[len] = '\n';
+        u64 total = 0;
+        IFile_Write(&file, &total, line, (u32)(len + 1), 0);
+    }
+
+    IFile_Close(&file);
+}
+
+// Load active cheats for this title. Matches lines in active_cheats.txt to parsed cheat names.
+static void Cheat_LoadActiveCheats(u64 titleId)
+{
+    if (!titleId || cheatCount == 0) return;
+
+    char path[64];
+    snprintf(path, sizeof(path), ACTIVE_CHEATS_PATH_FMT, titleId);
+
+    BufferedFile bf;
+    if (R_FAILED(BufferedFile_Open(&bf, ARCHIVE_SDMC, fsMakePath(PATH_EMPTY, ""), fsMakePath(PATH_ASCII, path), FS_OPEN_READ))) {
+        // No saved file or unable to open => nothing to restore
+        return;
+    }
+
+    // Clear current active flags first so the saved file is authoritative
+    for (u8 i = 0; i < cheatCount; i++) {
+        if (cheats[i]) cheats[i]->active = 0;
+    }
+
+    char line[512];
+    Result res;
+    do
+    {
+        res = Cheat_ReadLine(&bf, line, sizeof(line));
+        // Cheat_ReadLine uses -1 as EOF sentinel in this codebase; match existing style
+        if (R_SUCCEEDED(res) || res == -1)
+        {
+            char* name = stripWhitespace(line);
+            if (!name || name[0] == '\0') continue;
+
+            // match name to known cheats (exact match up to stored name length)
+            for (u8 i = 0; i < cheatCount; i++)
+            {
+                CheatDescription* c = cheats[i];
+                if (!c) continue;
+                if (strncmp(c->name, name, sizeof(c->name)) == 0)
+                {
+                    c->active = 1;
+                    break;
+                }
+            }
+        }
+    } while (R_SUCCEEDED(res));
+
+    IFile_Close(&bf.file);
+}
+
+/* --- End: Save / Load active cheats for a title --- */
+
 static void Cheat_LoadCheatsIntoMemory(u64 titleId)
 {
     cheatCount = 0;
@@ -1970,6 +2063,9 @@ static void Cheat_LoadCheatsIntoMemory(u64 titleId)
     }
 
     memset(cheatPage, 0, 0x1000);
+
+    // Restore saved active cheats for this title (if any)
+    Cheat_LoadActiveCheats(titleId);
 }
 
 static u32 Cheat_GetCurrentProcessAndTitleId(u64* titleId)
@@ -2117,6 +2213,9 @@ void RosalinaMenu_Cheats(void)
                 {
                     r = Cheat_MapMemoryAndApplyCheat(pid, cheats[selected]);
                 }
+
+                // Persist current active cheats state
+                Cheat_SaveActiveCheats(titleId);
             }
             else if (pressed & KEY_DOWN)
                 selected++;
@@ -2142,4 +2241,6 @@ void RosalinaMenu_Cheats(void)
         } while (!menuShouldExit);
     }
 
+    // Ensure active cheats are saved on menu exit
+    if (titleId) Cheat_SaveActiveCheats(titleId);
 }
